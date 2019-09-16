@@ -29,7 +29,7 @@ def write_OPT(scheds, ha_offsets):
         
     # Templates for scan
     preamble1 = ('VERSION; 4;\n'
-                 'SRC-CAT; MissedFermi, VLA;\n'
+                 'SRC-CAT; NCPSources, VLA;\n'
                  'HDWR-CAT; NRAO Defaults, Project 17B-165;\n\n')
     
     preamble2 = ('SCHED-BLOCK; {schedBlockName}; {schedulingType}; '
@@ -120,7 +120,7 @@ def write_OPT(scheds, ha_offsets):
         
     
     # Open source list file
-    sourcefile = 'outputs/MissedFermiCatalog.pst'
+    sourcefile = 'outputs/NCP_Sources.pst'
     sf = open(sourcefile, 'w')
     for source in sorted(sources.keys()):
         # Define sourceline for source

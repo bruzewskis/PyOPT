@@ -23,167 +23,7 @@ from scipy.optimize import brentq
 # Custom Modules
 from SimEVLA import EquitorialToHorizontal as E2H, MotionSimulator
 from SimEVLA import PointToPointTime as P2P
-from mosaicer import mosaic, make_mosaic_friendly, diagnostic_plot
-from findmissed import find_targets
 from optscheduler import write_OPT
-
-def checkflags(bitflag, goodflags, verbose=False):
-    '''
-    Determines whether flags on a particular source are acceptable based on
-    the input list of flags the user is okay with. Note that `bitflag` is a
-    base-10 number, which when represented as a 12-bit base-2 number
-    represents the active flags on a particular source. This is then compared
-    to a binary representation of the allowed flags via a bitwise and. If the
-    output of this operations is 000000000000, we return True, as all flags
-    are acceptable
-    
-    Args
-    =======
-    bitflag (int) - The base-10 representation of the flags. As stated in the
-        FERMI documentation, this can be thought of as sum(2^(flag_n-1)), so
-        if a source has flags 3 and 8, then bitflag=2^(3-1)+2^(8-1)=132.
-    goodflags (list) - The list of acceptable flags. For example, if flags 3 
-        and 8 are allowed, then this input should simply be [8,3]. Note that 
-        the order does not matter.
-    verbose (bool) - For diagnostic purposes, whether to display the bitwise
-        operation that is occuring.
-    
-    Returns
-    =======
-    is_allowed (bool) - A boolean determining if the flags on a particular
-        source match those provided in goodflags.
-    
-    Raises
-    =======
-    None
-    '''
-    
-    # Create gate number
-    checkb = (2**12-1) ^ np.sum(np.power(2, np.array(goodflags)-1))
-    
-    # Turn off appropriate flags
-    output = bitflag & checkb
-    
-    # Show operation if requested
-    if verbose:
-        print(np.binary_repr(bitflag,12), '=', bitflag)
-        print(np.binary_repr(checkb,12), '=', checkb)
-        print('-'*12)
-        print(np.binary_repr(output,12), '=', output)
-        
-    is_allowed = output==0
-    
-    return is_allowed
-
-def filter_data(data, keepflags, do_assoc=True, do_dec=True, do_nan=True):
-    '''
-    Filters the data around certian criteria to narrow our search to unassoc
-    sources that we can observe with the VLA. Further, we filter for only 
-    certian flags in the FERMI data, picking out ideal candidates.
-    
-    Args
-    =======
-    data (Table) - The raw fermi data table
-    keepflags (list<int>) - A list of integers representing the allowed flags
-    do_assoc (bool) - Whether to filter for only unassociated sources
-    do_dec (bool) - Whether to filter for VLA observable declinations
-    do_nan (bool) - Whether to filter out sources that have NaN values
-    
-    Returns
-    =======
-    filtered (Table) - A subset of the data input table which has only sources
-        matching all input criteria
-    
-    Raises
-    =======
-    ValueError - Raised if keepflags is not properly specified
-    '''
-    
-    # Keep track of filters
-    filters = []
-    
-    # Only keep certian flags
-    if isinstance(keepflags, list) and len(keepflags)>0:
-        has_good_flags = checkflags(data['Flags'], keepflags)
-        filters.append(has_good_flags)
-    elif len(keepflags)==0:
-        raise ValueError('keepflags=[] implies you want no data')
-    else:
-        raise ValueError('keepflags not properly specified')
-        
-    # We only care about unassociated sources
-    if do_assoc:
-        unassoc1 = np.array([ st.strip() == '' for st in data['ASSOC1'] ])
-        unassoc2 = np.array([ st.strip() == '' for st in data['ASSOC2'] ])
-        unassoc = np.logical_and(unassoc1, unassoc2)
-        filters.append(unassoc)
-    
-    # Sources in VLA Sky
-    if do_dec:
-        above40 = data['DEJ2000'] > -40
-        filters.append(above40)
-    
-    # Keep rows that aren't all NaN
-    if do_nan:
-        nonnan = ~np.isnan(data['Conf_95_SemiMajor'])
-        filters.append(nonnan)
-    
-    # Apply filters
-    filt = np.all(np.stack(filters), axis=0)
-    filtered = data[filt]
-    
-    return filtered
-
-def narrow_targets(fdata, vdata, beam, missed_frac=0.5, mosaic_cutoff=7, 
-                   writename=None, verbose=False):
-    '''
-    From input tables, generates a list of targets for followup based on
-    certian hard-coded critera, namely the fraction of the missed area and
-    the number of pointings needed to mosaic the object. 
-    '''
-    
-    # Find missed areas
-    missed_areas = find_targets(fdata, vdata)
-    
-    # How much of the area was missed
-    smaj = fdata['Conf_95_SemiMajor'].quantity
-    smin = fdata['Conf_95_SemiMinor'].quantity
-    fdata['MissedFrac'] = (missed_areas/(np.pi*smaj*smin)).value
-    
-    # Generate mosaics, linked to names
-    friendly = make_mosaic_friendly(fdata)
-    mo_coords = {}
-    numtomosaic = []
-    for i in range(len(fdata)):
-        coords = mosaic(beamsize=beam, **friendly[i])
-        mo_coords[fdata['Source_Name'][i]] = coords
-        numtomosaic.append(len(coords))
-    fdata['NumToMosaic'] = numtomosaic
-    if verbose:
-        print('Mosaiced all the sources')
-    
-    # Pretty example
-    ri = np.random.randint(0,len(fdata))
-    need = fdata['NumToMosaic'][ri]
-    name = fdata['Source_Name'][ri]
-    if verbose:
-        print('Here\'s an example ('+name+') that needs', need, 'pointing(s):')
-        diagnostic_plot(friendly[ri], mo_coords[fdata['Source_Name'][ri]],beam)
-    
-    # Filter down
-    check = np.logical_and(fdata['MissedFrac']>missed_frac, 
-                           fdata['NumToMosaic']<mosaic_cutoff)
-    targets = fdata[check]
-    iden_str = 'Identified {0} candidates (missed>{1}, tiles<{2})'
-    if verbose:
-        print(iden_str.format(len(targets), missed_frac, mosaic_cutoff))
-    
-    # Write those out
-    if writename is not None:
-        targets.write(writename, overwrite=True)
-        print('Wrote candidate list to', writename)
-    
-    return targets, mo_coords
 
 def block_argsort(ra, dec):
     '''
@@ -480,7 +320,7 @@ def predict_target(tgt_ra, tgt_dec, tel_az, tel_el, lst0):
     
     return azf_ang, elf_ang
 
-def schedule_block(block, mosaics, calibrators, source_scan=35, cal_scan=35, 
+def schedule_block(block, mosaics, source_scan=280, cal_scan=300, 
                    ha_offset=0, verbose=True, config='A', wrap_pref=None):
     '''
     For input points and start LST, run a simulated observation to see if 
@@ -536,7 +376,6 @@ def schedule_block(block, mosaics, calibrators, source_scan=35, cal_scan=35,
         wrap_pref = ''
     
     # Define the coherence time manually
-    COHERENCE_TIME = 30*u.min
     
     # Convenience function for sc->str
     sc_to_ra = lambda sc:sc.ra.to_string('h', sep=':', pad=True)
@@ -559,27 +398,19 @@ def schedule_block(block, mosaics, calibrators, source_scan=35, cal_scan=35,
     # This will keep a running track of time
     lst = lst0.wrap_at('360d') # initialize
     total_time = 0*u.s
-    last_cal = -1*COHERENCE_TIME # Make sure we get cal at start
     
     ############### DETERMINE BEST CALIBRATOR ###############
-    # Find best available flux calibrator
-    flux_cal_names = ['0521+166=3C138', '0542+498=3C147', '1331+305=3C286']
-    flux_cals = SkyCoord(['05h21m09.886021s  16d38\'22.051220"', # 3C138
-                          '05h42m36.137916s  49d51\'07.233560"', # 3C147
-                          '13h31m08.287984s  30d30\'32.958850"']) # 3C286
-    flux_az, flux_el = E2H(flux_cals.ra, flux_cals.dec, lst)
-    best_ind = np.argmax(flux_el)
-    
     # Values for best flux cal
-    best_flux_name = flux_cal_names[best_ind]
-    best_flux_sc = flux_cals[best_ind]
+    best_flux_name = 'Cygnus A'
+    best_flux_sc = SkyCoord('19h59m28.34s', '40d44\'02.12"')
+    best_flux_az, best_flux_el = E2H(best_flux_sc.ra, best_flux_sc.dec, lst)
     
     # What is the worst possible slew we might have to do
-    worst_slew = worst_setup_slew(flux_az[best_ind], flux_el[best_ind])
+    worst_slew = worst_setup_slew(best_flux_az, best_flux_el)
     setup_atten = 1*u.min
     setup_req = 30*u.s
-    scan_tgt = 2*u.min
     slew_target = P2P(best_flux_sc, tgt0, lst0)
+    scan_tgt = 10*u.min
     
     # Calculate length of setup slew
     setup_slew = worst_slew - setup_atten - setup_req
@@ -636,7 +467,7 @@ def schedule_block(block, mosaics, calibrators, source_scan=35, cal_scan=35,
     end_ha = (end_lst-best_flux_sc.ra).wrap_at('180d')
     atten_line = {'scanName': 'atten',
                   'sourceName': best_flux_name,
-                  'resourceName': 'C32f2',
+                  'resourceName': 'L16f3B',
                   'timeType': 'DUR',
                   'time': to_dur_fmt(setup_atten),
                   'antennaWrap': wrap_pref,
@@ -669,7 +500,7 @@ def schedule_block(block, mosaics, calibrators, source_scan=35, cal_scan=35,
     end_ha = (end_lst-best_flux_sc.ra).wrap_at('180d')
     req_line = {'scanName': 'req',
                 'sourceName': best_flux_name,
-                'resourceName': 'C32f2',
+                'resourceName': 'L16f3B',
                 'timeType': 'DUR',
                 'time': to_dur_fmt(setup_req),
                 'antennaWrap': wrap_pref,
@@ -702,7 +533,7 @@ def schedule_block(block, mosaics, calibrators, source_scan=35, cal_scan=35,
     end_ha = (end_lst-best_flux_sc.ra).wrap_at('180d')
     flux_tgt_line = {'scanName': '',
                      'sourceName': best_flux_name,
-                     'resourceName': 'C32f2',
+                     'resourceName': 'L16f3B',
                      'timeType': 'DUR',
                      'time': to_dur_fmt(scan_tgt),
                      'antennaWrap': wrap_pref,
@@ -738,47 +569,37 @@ def schedule_block(block, mosaics, calibrators, source_scan=35, cal_scan=35,
     sim = MotionSimulator(end_az, end_el, wrap=w)
     
     # Run Simulation
-    old_cal_arr, old_cname = None, None
     for i in range(len(block)):
         # Grab mosaic coordinates
         fname = block['Source_Name'][i]
-        mosaic = mosaics[fname]
+        mosi = mosaics[fname]
         
         # Generate some names and notes
         b26 = lambda n : chr(97+n//26) + chr(97+n%26)
-        names = [ fname[5:-1]+b26(n) for n in range(len(mosaic)) ]
-        intents = ['ObsTgt']*len(mosaic)
-        dur = [source_scan]*len(mosaic)
+        names = [ fname+b26(n) for n in range(len(mosi)) ]
+        intents = ['ObsTgt']*len(mosi)
+        dur = [source_scan]*len(mosi)
+            
+        # Prepend a calibrator
+        csc = SkyCoord('21h04m06.937s', '+76d33\'10.41"')
+        cname = '3C427.1'
+        cal_arr = np.array([[csc.ra.deg, csc.dec.deg]])
         
-        # If its been a while, then we should calibrate
-        if total_time - last_cal > COHERENCE_TIME/2:
+        # Prepend calibrator
+        mosi = np.concatenate((cal_arr, mosi), axis=0)
+        names.insert(0, cname)
+        intents.insert(0, 'CalGain')
+        dur.insert(0, cal_scan)
             
-            # Find nearest calibrator to next source
-            next_src = SkyCoord(mosaic[0][0]*u.deg, mosaic[0][1]*u.deg)
-            csc, cname = find_nearest_cal(next_src, calibrators, config)
-            cal_arr = np.array([[csc.ra.deg, csc.dec.deg]])
-            
-            # Prepend calibrator
-            mosaic = np.concatenate((cal_arr, mosaic), axis=0)
-            names.insert(0, cname)
-            intents.insert(0, 'CalGain')
-            dur.insert(0, cal_scan)
-            
-            if i!=0:
-                mosaic = np.concatenate((old_cal_arr, mosaic), axis=0)
-                names.insert(0, old_cname)
-                intents.insert(0, 'CalGain')
-                dur.insert(0, cal_scan)
-                
-            old_cal_arr = cal_arr
-            old_cname = cname
-            
-            # Record that we calibrated
-            last_cal = total_time.copy()
+        if i==len(block)-1:
+            mosi = np.concatenate((mosi, cal_arr), axis=0)
+            names.append(cname)
+            intents.append('CalGain')
+            dur.append(cal_scan)
         
-        for j in range(len(mosaic)):
+        for j in range(len(mosi)):
             # Move to a new spot on sky
-            scj = SkyCoord(mosaic[j][0]*u.deg, mosaic[j][1]*u.deg)
+            scj = SkyCoord(mosi[j][0]*u.deg, mosi[j][1]*u.deg)
             
             # Trying something new
             current_az = sim.getCurrentAntennaAzimuth()
@@ -813,7 +634,7 @@ def schedule_block(block, mosaics, calibrators, source_scan=35, cal_scan=35,
             # Keep track of scan
             source_line = {'scanName': '',
                            'sourceName': names[j],
-                           'resourceName': 'C32f2',
+                           'resourceName': 'L16f3B',
                            'timeType': 'DUR',
                            'time': to_dur_fmt(slew+scan),
                            'antennaWrap': wrap_pref,
@@ -928,21 +749,21 @@ def time_block(block):
     diff = sum(tangs)
     return diff
     
-def make_best_block(block, mosaics, calibrators, haoff, wrap, verbose, 
+def make_best_block(block, mosaics, haoff, wrap, verbose, 
                     doplots=True):
     
-    dummy = schedule_block(block, mosaics, calibrators, ha_offset=haoff, 
+    dummy = schedule_block(block, mosaics, ha_offset=haoff, 
                            wrap_pref=wrap, verbose=True)
     
     # Figure out what schedules to test
-    width = 10/60
-    steps = 13
+    width = -1
+    steps = 10
     ha_range = np.linspace(haoff-width, haoff+width, steps)
     
     # Generate schedules
     sub_blocks = []
     for ha in ha_range:
-        sblock = schedule_block(block, mosaics, calibrators, ha_offset=ha, 
+        sblock = schedule_block(block, mosaics, ha_offset=ha, 
                                 wrap_pref=wrap, verbose=verbose)
         sub_blocks.append(sblock)
         
@@ -994,83 +815,145 @@ def make_best_block(block, mosaics, calibrators, haoff, wrap, verbose,
     
     return master_block
     
-def main():
+def mosaic_new(radius, beamsize=0.0585):
+    '''
+    From input parameters of a FERMI positional uncertianty ellipse, generate
+    a mosaic of beams to completely cover it. The coordinates of the mosaic
+    pointing centers are returned.
     
-    # 4FGL Data
-    fermi = Table.read('inputs/FERMI_4FGL.fit', format='fits', hdu=1)
-    print('Read in', len(fermi), 'FERMI sources')
+    Args
+    =======
+    ra (float) - The right ascension of the FERMI source
+    dec (float) - The declination of the FERMI source
+    semimaj (float) - The semimajor axis of the FERMI source
+    semimin (float) - The semiminor axis of the FERMI source
+    angle (float) - The angle of the FERMI source, note that by default this
+        is measured clockwise of North, and for our purposes we need it
+        counterclockwise of East.
     
-    # Filter for flags
-    fermi = filter_data(fermi, [12,10,1])
-    print('Found', len(fermi), 'sources with good flags')
+    Returns
+    =======
+    mosaic_coords (array) - An numpy array of coordinate points with shape
+        (n,2). Note that the order of these points should amount to a fairly
+        optimized slew path, alternating up and down rows.
+        
+    Raises
+    =======
+    None
+    '''
     
-    # VLA Data
-    vla = Table.read('inputs/pointings.csv', format='csv')
-    print('Read in', len(vla), 'VLA pointings')
+    # Figure out how many rows/columns we need
+    ver_bm = np.sqrt(3)/2 * beamsize # scaled to spacing
+    nh = np.ceil(radius/beamsize)
+    nv = np.ceil(radius/ver_bm)//2*2+1 # oddify
     
-    # VLA Beamsize (C-band, EVLA Memo 154)
-    beamsize = (21.07/6)/60 # deg
+    # Build ranges
+    rangev = np.linspace(-(nv-1)/2, (nv-1)/2, int(nv))
     
-    # VLA Max El
-    vla_lat = 34.0784 # deg
-    min_dec = -30
+    coords = []
+    for i in range(int(nv)):
+        # For any row the y will be the same
+        y = np.sqrt(3) * beamsize * rangev[i]
+        
+        # Flips center-like rows
+        # Non-center-like rows shift left, add point on right
+        tnh = nh
+        if i%2==((nv-1)/2)%2:
+            tnh = 1-nh
+        rangeh = np.linspace(-tnh/2, tnh/2, int(abs(tnh)+1))
+            
+        # Loop through points in row
+        for j in range(len(rangeh)):
+            # Calculated x for each point
+            x = 2 * beamsize * rangeh[j]
+            
+            # Record coordinate pair
+            coords.append([x,y])
+            
+    # Arrayify
+    coords = np.array(coords)
+            
+    # Remove any points not inside ellipse + fraction of beam radius
+    fr = 0.8 # Derived -> (arccos(fr) - fr*sqrt(1-fr**2)) = 0.05*pi
+    ewp = radius + fr*beamsize
+    ehp = radius + fr*beamsize
+    inside = (coords[:,0]/ewp)**2+(coords[:,1]/ehp)**2 <= 1
+    coords_in = coords[inside]
     
-    # Load in calibrators
-    cal_file = 'inputs/calcat_C.fits'
-    cals = Table.read(cal_file)
-    northern_cals = cals[Angle(cals['dec']).deg>vla_lat]
-    southern_cals = cals[Angle(cals['dec']).deg<vla_lat]
-    print('Found', len(northern_cals), 'calibrators in the North')
-    print('Found', len(southern_cals), 'calibrators in the South')
+    return coords_in
 
-    # Get target list and pointings for each source
-    tgt, moc = narrow_targets(fermi, vla, beamsize, missed_frac=0.5, 
-                              mosaic_cutoff=5)
+def rotate(sc_pnt, sc_shift):
+    if sc_pnt.ndim == 0:
+        sc_pnt = SkyCoord([sc_pnt.ra], [sc_pnt.dec])
+    
+    new_ra = np.zeros(len(sc_pnt))
+    new_dec = np.zeros(len(sc_pnt))
+    for i in range(len(sc_pnt)):
+        pnt_ra = sc_pnt[i].ra
+        pnt_dec = sc_pnt[i].dec
+        
+        ra_shift = sc_shift.ra
+        dec_shift = sc_shift.dec
+        
+        v = np.array([[np.cos(pnt_dec)*np.cos(pnt_ra+ra_shift)],
+                      [np.cos(pnt_dec)*np.sin(pnt_ra+ra_shift)],
+                      [np.sin(pnt_dec)]])
+        
+        uv = np.array([[-np.sin(ra_shift)],
+                      [np.cos(ra_shift)],
+                      [0]])
+        
+        cross_u = np.array([[0, -uv[2][0], uv[1][0]],
+                            [uv[2][0], 0, -uv[0][0]],
+                            [-uv[1][0], uv[0][0], 0]])
+        
+        t1 = np.cos(dec_shift)*np.identity(3)
+        t2 = -np.sin(dec_shift)*cross_u
+        t3 = (1-np.cos(dec_shift))*np.outer(uv,uv)
+        R = t1+t2+t3
+        
+        v_pr = R.dot(v)
+        
+        nra = np.arctan2(v_pr[1][0], v_pr[0][0])
+        ndc = np.arcsin(v_pr[2][0])
+        
+        new_ra[i] = nra.to('deg').value
+        new_dec[i] = ndc.to('deg').value
+    
+    new_sc = SkyCoord(new_ra*u.deg, new_dec*u.deg)
+    
+    if len(new_sc)==1:
+        return new_sc[0]
+    else:
+        return new_sc
+
+def main():
+    beamsize = 1.1
+    moc = mosaic_new(6, beamsize)
+    scm = SkyCoord(moc[:,0]*u.deg, moc[:,1]*u.deg)
+    scmr = rotate(scm, SkyCoord('0d', '90d'))
+    moc = {'NCP': np.array([scmr.ra.deg, scmr.dec.deg]).T}
+    
+    tgt = Table({'Source_Name': ['NCP']*2, 'RAJ2000':[0]*2 *u.deg, 
+                 'DEJ2000':[89.99]*2 *u.deg})
+    
+    
+    plt.scatter(scmr.ra.deg, scmr.dec.deg)
+    plt.xlabel('RA [deg]')
+    plt.ylabel('DEC [deg]')
+    plt.grid()
+    plt.show()
+    
     
     # Block list
     blocks = []
     has = []
     
-    # SouthWest
-    ha1 = -0.5
-    block1 = make_block(tgt, ramin=-150, ramax=0, dcmin=min_dec, dcmax=vla_lat)
-    bestblock1 = make_best_block(block1, moc, southern_cals, ha1, 'CCW', False)
+    # Make block
+    ha1 = -2
+    bestblock1 = make_best_block(tgt, moc, haoff=ha1, wrap='CCW', verbose=False)
     blocks.append(bestblock1)
     has.append(ha1)
-    
-    # SouthEast 1
-    ha2 = 1.25
-    block2 = make_block(tgt, ramin=0, ramax=120, dcmin=min_dec, dcmax=vla_lat)
-    bestblock2 = make_best_block(block2, moc, southern_cals, ha2, 'CCW', False)
-    blocks.append(bestblock2)
-    has.append(ha2)
-    
-    # SouthEast 2
-    ha3 = 1
-    block3 = make_block(tgt, ramin=120, ramax=210, dcmin=min_dec, dcmax=vla_lat)
-    bestblock3 = make_best_block(block3, moc, southern_cals, ha3, 'CCW', False)
-    blocks.append(bestblock3)
-    has.append(ha3)
-    
-    # NorthEast
-    ha4 = 4
-    block4 = make_block(tgt, ramin=0, ramax=180, dcmin=vla_lat, dcmax=90)
-    bestblock4 = make_best_block(block4, moc, northern_cals, ha4, '', False)
-    blocks.append(bestblock4)
-    has.append(ha4)
-    
-    # NorthWest
-    ha5 = 4.5
-    block5 = make_block(tgt, ramin=180, ramax=360, dcmin=vla_lat, dcmax=90)
-    bestblock5 = make_best_block(block5, moc, northern_cals, ha5, '', False)
-    blocks.append(bestblock5)
-    has.append(ha5)
-    
-    # Organize
-    total_time = 0
-    for block in blocks:
-        total_time += time_block(block)
-    print(total_time)
     
     # Write
     write_OPT(blocks, has)
