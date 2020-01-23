@@ -58,7 +58,7 @@ scanloop = po.Scan(target = somesources, setup = cbandsetup, repeat=10, dur=[10,
 new_project['A']['block1'].add_scan(somescans)
 
 # Validate
-report = po.validate(new_project, show_plots=True) # Runs validator over project, returns results
+report = po.validate('VLA', new_project, show_plots=True) # Runs validator over project, returns results
 
 # Write out
 new_project.writeOPT('myproject.xml', overwrite=True)
