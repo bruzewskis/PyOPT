@@ -70,8 +70,8 @@ class _Container():
         
     def pprint(self, _prefix=''):
         
-        outtext = self.name
+        outtext = _prefix + self.name + '\n'
         for item in self._items:
-            outtext += item.pprint(_prefix='\t')
+            outtext += item.pprint(_prefix=_prefix+'\t')
         
         return outtext
